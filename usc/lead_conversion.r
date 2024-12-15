@@ -2,6 +2,7 @@
 
 # library import ---------------------------------------------------------------------------------------
 library(readxl)
+library(ggplot2)
 
 
 # constants --------------------------------------------------------------------------------------------
@@ -47,7 +48,6 @@ sources <- list(
   usc_usernames = usc_usernames
 )
 
-
 # remove na 
 for (t in names(sources)) {
   sources[[t]] <- remove_na_rows(sources[[t]], key_fields[[t]])
@@ -62,6 +62,9 @@ users_j1 <- merge(
   all.x = TRUE 
 )
 
+# drop time convert timestamp to date
+users_j1$start <- as.Date(users_j1$start) 
+
 # order by first contact date
 users_j1 <- users_j1[order(users_j1$first_contact), ]
 
@@ -69,19 +72,11 @@ users_j1$user_id <- seq_along(users_j1$username)
 
 users_j2 <- merge(
   x = users_j1[, c("user_id", "contact_tag", "first_contact", "start")],
-  y = sources$contacts[, c("contact_name", "first_sex")],
+  y = sources$contacts[, c("contact_name", "first_sex", "pre_date_hrs")],
   by.x = "contact_tag",
   by.y = "contact_name",
   all.x = TRUE 
 )
-
-# drop contact name
-users_j2 <- users_j2[, c(
-  "user_id",
-  "start",
-  "first_contact",
-  "first_sex"
-)]
 
 # rename fields
 rename_fields_j2 <- list(
@@ -93,14 +88,6 @@ rename_fields_j2 <- list(
 for (f in names(rename_fields_j2)) {
   colnames(users_j2)[colnames(users_j2) == f] <- rename_fields_j2[[f]]
 }
-
-# reorder fields
-users_j2 <- users_j2[, c(
-  "user_id",
-  "bid_date",
-  "contact_date",
-  "sex_date"
-)]
 
 # order by bid date
 users <- users_j2[order(users_j2$bid_date),]
@@ -118,3 +105,93 @@ users$sex_days <- ifelse(
   as.numeric(difftime(users$sex_date, users$contact_date, units = "days")),
   NA
 )
+
+# keep analysis fields
+users <- users[, c(
+  "user_id",
+  "contact_days",
+  "sex_days",
+  "pre_date_hrs"
+)]
+
+# create tables for contacts and sex
+sex_by_stage <- users[!is.na(users$sex_days),]
+no_sex_by_stage <- users[is.na(users$sex_days),]
+contacts_by_stage <- users[!is.na(users$contact_days),]
+
+#plot hrs and days in contact
+ggplot(data = sex_by_stage, aes(x = sex_days, y = pre_date_hrs)) +
+  geom_point() + # Scatter plot
+  labs(
+    title = "Plot of sex_days vs. pre_date_hrs",
+    x = "lead days",
+    y = "lead hrs"
+  ) +
+  theme_minimal() # A clean theme
+
+# histogram days in contact
+sex_days_bins <- c(0, 7, 14, 21, 28, 35)
+sex_by_stage$sex_days_bins <- cut(sex_by_stage$sex_days, breaks = sex_days_bins, include.lowest = TRUE)
+sex_days_hist <- as.data.frame(table(sex_by_stage$sex_days_bins))
+
+# convert days to log(days)
+colnames(sex_days_hist) <- c("sex_days_bins", "counts")
+bin_edges <- as.numeric(gsub("[^0-9\\.]", "", levels(sex_days_hist$sex_days_bins))) # Clean and extract numbers
+log_bin_edges <- log(bin_edges) # Apply natural log transformation
+sex_days_hist$log_bins <- log_bin_edges
+
+# plot histogram
+ggplot(sex_days_hist, aes(x = log_bins, y = counts)) +
+  geom_bar(stat = "identity", fill = "skyblue", color = "black") +
+  labs(
+    title = "days in contact",
+    x = "log(days)",
+    y = "count"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# model probability of conversion given days in contact
+
+stage_counts <- list(
+  users = nrow(users),
+  contacts = nrow(contacts_by_stage),
+  sex = nrow(sex_by_stage)
+)
+
+# get normalization constant
+p_cs <- stage_counts$sex / stage_counts$contacts
+
+# normalize the counts to marginal probability 
+sex_days_hist$dp_dt <- (sex_days_hist$counts / stage_counts$contacts) * p_cs
+
+# apply the linear regression
+model <- lm(log_bins ~ dp_dt, data = sex_days_hist)
+coefficients <- coef(model)
+d_max <- -coefficients[2] / coefficients[1]
+
+# lead conversion probability function vs days in contact
+p_resid <- function(d) {
+  a <- coefficients[1]
+  b <- coefficients[2]
+  
+  if (d <= 0) {
+    stop("d_ic must be greater than 0")
+  }
+    resid <- (a / 2) * log(d)^2 - b * log(d) - (3 * b^2) / (2 * a)  
+  return(resid)
+}
+
+# plot conversion probability over range 0-45 days in contact
+days_in_contact <- seq(1, 60, length.out = 500)
+p_cnv_resid <- sapply(days_in_contact, function(d) p_resid(d))
+cnv_vs_dic <- data.frame(days = days_in_contact, prob_cnv = p_cnv_resid)
+
+ggplot(cnv_vs_dic, aes(x = days, y = prob_cnv)) +
+  geom_line(color = "blue") +
+  labs(
+    title = "residual prob of lead conversion vs days in contact",
+    x = "days",
+    y = "prob"
+  ) +
+  theme_minimal()
