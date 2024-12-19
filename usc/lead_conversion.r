@@ -136,7 +136,7 @@ sex_days_hist <- as.data.frame(table(sex_by_stage$sex_days_bins))
 
 # convert days to log(days)
 colnames(sex_days_hist) <- c("sex_days_bins", "counts")
-bin_edges <- as.numeric(gsub("[^0-9\\.]", "", levels(sex_days_hist$sex_days_bins))) # Clean and extract numbers
+bin_edges <- as.numeric(gsub(".*,(\\d+\\.?\\d*)\\]", "\\1", levels(sex_days_hist$sex_days_bins))) # Clean and extract numbers
 log_bin_edges <- log(bin_edges) # Apply natural log transformation
 sex_days_hist$log_bins <- log_bin_edges
 
@@ -162,23 +162,20 @@ stage_counts <- list(
 # get normalization constant
 p_cs <- stage_counts$sex / stage_counts$contacts
 
-# normalize the counts to marginal probability 
+# normalize the counts to marginal probability
 sex_days_hist$dp_dt <- (sex_days_hist$counts / stage_counts$contacts) * p_cs
 
 # apply the linear regression
 model <- lm(log_bins ~ dp_dt, data = sex_days_hist)
 coefficients <- coef(model)
-d_max <- -coefficients[2] / coefficients[1]
+d_max <- exp(-coefficients[1] / coefficients[2])
 
 # lead conversion probability function vs days in contact
 p_resid <- function(d) {
-  a <- coefficients[1]
-  b <- coefficients[2]
-  
   if (d <= 0) {
-    stop("d_ic must be greater than 0")
+    stop("d must be greater than 0")
   }
-    resid <- (a / 2) * log(d)^2 - b * log(d) - (3 * b^2) / (2 * a)  
+  resid <- p_cs * ((log(d) / log(d_max))^2 - 2 * log(d) / log(d_max) + 1)
   return(resid)
 }
 
