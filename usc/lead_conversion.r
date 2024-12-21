@@ -1,6 +1,7 @@
 # conversion model for leads sourced through USC
 
 # library import ---------------------------------------------------------------------------------------
+library(dplyr)
 library(readxl)
 library(ggplot2)
 
@@ -59,11 +60,11 @@ users_j1 <- merge(
   y = sources$usc_contacts[, c("contact_tag", "usc_username", "start")],
   by.x = "username",
   by.y = "usc_username",
-  all.x = TRUE 
+  all.x = TRUE
 )
 
 # drop time convert timestamp to date
-users_j1$start <- as.Date(users_j1$start) 
+users_j1$start <- as.Date(users_j1$start)
 
 # order by first contact date
 users_j1 <- users_j1[order(users_j1$first_contact), ]
@@ -88,6 +89,12 @@ rename_fields_j2 <- list(
 for (f in names(rename_fields_j2)) {
   colnames(users_j2)[colnames(users_j2) == f] <- rename_fields_j2[[f]]
 }
+
+# contact tags lookup table 
+contact_tags <- users_j2[, c(
+  "user_id",
+  "contact_tag"
+)]
 
 # order by bid date
 users <- users_j2[order(users_j2$bid_date),]
@@ -192,3 +199,50 @@ ggplot(cnv_vs_dic, aes(x = days, y = prob_cnv)) +
     y = "prob"
   ) +
   theme_minimal()
+
+# gaps
+# 1 filter for prospects prospect_stage = "pre-date" and lead_source = "usc"
+ul_events <- events %>%
+  filter(prospect_stage == "pre_date" & lead_source == "usc")
+
+# Step 1: Initial selection, grouping, and lag calculation
+ul_gd_j1 <- ul_events %>%
+  select(date, contact_name) %>%
+  distinct() %>%  # Ensure unique rows (equivalent to GROUP BY contact_name, date without aggregation)
+  arrange(contact_name, date) %>%  # Sort by contact_name and date
+
+  group_by(contact_name) %>%
+  mutate(
+    date_next = date,  # Explicitly define date_next (optional, as date is already available)
+    date_prior = lag(date_next),  # Compute prior date
+    gap_days = if_else(is.na(date_prior), 0, as.numeric(date_next - date_prior))  # Calculate gap days
+  )  %>%
+  ungroup() %>%  # Remove grouping to allow further aggregation
+  
+  # Step 2: Aggregate by contact_name
+  group_by(contact_name) %>%
+  summarize(
+     start_date = min(date_next, na.rm = TRUE),  # Calculate the first date
+     last_date = max(date_next, na.rm = TRUE),   # Calculate the last date
+     gap_days_max = max(gap_days, na.rm = TRUE)  # Calculate the maximum gap days
+  ) %>%
+  ungroup() #%>%  # Ensure no residual grouping
+  #arrange(start_date)  # Sort by start_date
+
+# add user_id
+ul_gap_days <- merge(
+  x = ul_gd_j1,
+  y = contact_tags,
+  by.x = "contact_name",
+  by.y = "contact_tag",
+  all.x = TRUE 
+)
+
+# order by user_id and start_date
+ul_gap_days <- ul_gap_days[order(ul_gap_days$user_id, ul_gap_days$date_next),]
+#ul_gap_days <- ul_gap_days[order(ul_gap_days$start_date),]
+
+# filter for single user_id == 6
+#sample_user_id = 6
+#sample_user_gap_days <- ul_gap_days %>%
+#  filter(user_id == sample_user_id)
